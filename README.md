@@ -63,6 +63,7 @@ This MCP server exposes the Planka v2 API through the Model Context Protocol (MC
 | -------------- | ------------------- |
 | 2.0.0-rc.2     | ✅ Tested           |
 | 2.1.1          | ✅ Tested           |
+| 2.2.1          | ✅ Tested           |
 | Newer 2.x      | ⚠️ Expected to work |
 
 ## Features
