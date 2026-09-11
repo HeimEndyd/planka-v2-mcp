@@ -24,7 +24,12 @@ import * as lists from "../operations/lists.js";
 import * as projects from "../operations/projects.js";
 import * as tasks from "../operations/tasks.js";
 // Import custom tools
-import { createCardWithTasks, getBoardSummary, getCardDetails } from "../tools/index.js";
+import {
+  createCardWithTasks,
+  getBoardSummary,
+  getCardDetails,
+  readAttachment,
+} from "../tools/index.js";
 
 // Test data
 const testPrefix = `test-${Date.now()}`;
@@ -492,9 +497,20 @@ describe("MCP Planka Integration Tests", () => {
             size: file.size,
             creatorUserId: expect.any(String),
             url: expect.stringContaining(`/attachments/${attachmentId}/download/`),
+            resourceUri: `planka-attachment://${cardId}/${attachmentId}`,
           }),
         ]),
       );
+
+      const attachmentResult = await readAttachment({ cardId, attachmentId });
+      expect(attachmentResult.content[1]).toEqual({
+        type: "resource",
+        resource: {
+          uri: `planka-attachment://${cardId}/${attachmentId}`,
+          mimeType: "application/pdf",
+          blob: Buffer.from(await file.arrayBuffer()).toString("base64"),
+        },
+      });
     });
 
     test("should create card with tasks", async () => {

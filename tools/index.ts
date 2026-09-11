@@ -7,6 +7,7 @@
  * aggregated data from multiple sources.
  */
 
+export * from "./attachment-manager.js";
 // Export all tools
 export * from "./board-summary.js";
 export * from "./card-details.js";

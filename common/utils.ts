@@ -1,5 +1,6 @@
 import { getUserAgent } from "universal-user-agent";
 import { createPlankaError } from "./errors.js";
+import { readEnvironmentSecret } from "./secrets.js";
 import { VERSION } from "./version.js";
 
 // Global variables to store tokens
@@ -36,13 +37,11 @@ export function buildUrl(
 const USER_AGENT = `modelcontextprotocol/servers/planka/v${VERSION} ${getUserAgent()}`;
 
 async function authenticateAgent(): Promise<string> {
-  const email = process.env.PLANKA_AGENT_EMAIL;
-  const password = process.env.PLANKA_AGENT_PASSWORD;
+  const email = readEnvironmentSecret("PLANKA_AGENT_EMAIL");
+  const password = readEnvironmentSecret("PLANKA_AGENT_PASSWORD", process.env, true);
 
   if (!email || !password) {
-    throw new Error(
-      "PLANKA_AGENT_EMAIL and PLANKA_AGENT_PASSWORD environment variables are required",
-    );
+    throw new Error("PLANKA_AGENT_EMAIL and PLANKA_AGENT_PASSWORD values or files are required");
   }
 
   const baseUrl = process.env.PLANKA_BASE_URL || "http://localhost:3000";
@@ -90,6 +89,28 @@ async function getAuthToken(): Promise<string> {
   return authenticateAgent();
 }
 
+export type PlankaAuthTarget = "api" | "download";
+
+/**
+ * Builds authentication headers without exposing credentials to MCP callers.
+ * API keys work for both API and file routes. JWT download routes use the
+ * accessToken cookie because Planka does not consume Authorization there.
+ */
+export async function getPlankaAuthHeaders(
+  target: PlankaAuthTarget = "api",
+): Promise<Record<string, string>> {
+  const apiKey = readEnvironmentSecret("PLANKA_API_KEY");
+  if (apiKey) {
+    return { "X-Api-Key": apiKey };
+  }
+
+  const token = await getAuthToken();
+  if (target === "download") {
+    return { Cookie: `accessToken=${token}` };
+  }
+  return { Authorization: `Bearer ${token}` };
+}
+
 export async function plankaRequest(path: string, options: RequestOptions = {}): Promise<unknown> {
   const baseUrl = process.env.PLANKA_BASE_URL || "http://localhost:3000";
 
@@ -126,8 +147,7 @@ export async function plankaRequest(path: string, options: RequestOptions = {}):
   // Add authentication token if not skipped
   if (!options.skipAuth) {
     try {
-      const token = await getAuthToken();
-      headers.Authorization = `Bearer ${token}`;
+      Object.assign(headers, await getPlankaAuthHeaders("api"));
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       throw new Error(`Failed to get authentication token: ${errorMessage}`);

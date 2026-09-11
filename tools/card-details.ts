@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { type PlankaAttachmentMetadata, PlankaAttachmentSchema } from "../common/types.js";
 import { plankaRequest } from "../common/utils.js";
+import { getAttachmentsFromIncluded, toAttachmentMetadata } from "../operations/attachments.js";
 import { getBoards } from "../operations/boards.js";
 import { getCardWithIncluded } from "../operations/cards.js";
 import { getComments } from "../operations/comments.js";
@@ -47,27 +47,9 @@ export async function getCardDetails(params: GetCardDetailsParams) {
       throw new Error(`Card with ID ${cardId} not found`);
     }
 
-    const includedAttachments = Array.isArray(cardResponse.included?.attachments)
-      ? cardResponse.included.attachments
-      : [];
-    const attachments: PlankaAttachmentMetadata[] = includedAttachments
-      .map((attachment) => PlankaAttachmentSchema.parse(attachment))
-      .filter((attachment) => attachment.cardId === card.id)
-      .map((attachment) => ({
-        id: attachment.id,
-        cardId: attachment.cardId,
-        creatorUserId: attachment.creatorUserId,
-        name: attachment.name,
-        type: attachment.type,
-        mimeType: attachment.type === "file" ? attachment.data.mimeType : null,
-        size:
-          attachment.type === "file"
-            ? (attachment.data.size ?? attachment.data.sizeInBytes ?? null)
-            : null,
-        url: attachment.data.url,
-        createdAt: attachment.createdAt,
-        updatedAt: attachment.updatedAt,
-      }));
+    const attachments = getAttachmentsFromIncluded(card.id, cardResponse.included).map(
+      toAttachmentMetadata,
+    );
 
     // Get tasks for the card
     const tasks = await getTasks(card.id);
