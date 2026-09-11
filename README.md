@@ -151,6 +151,10 @@ Project setup completed successfully.
 
 </details>
 
+`card_manager` with `action: "get_details"` includes an `attachments` array with read-only
+metadata: attachment and card IDs, creator user ID, name, type, MIME type, size, download or link
+URL, and timestamps. It does not download or return attachment contents.
+
 ## Quick Start
 
 ### Requirements

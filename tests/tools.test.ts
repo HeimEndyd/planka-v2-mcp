@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, jest, test } from "@jest/globals";
-import { board, card, comment, label, list, project, task } from "./fixtures.js";
+import { board, card, comment, fileAttachment, label, list, project, task } from "./fixtures.js";
 
 type OneArg = (value: string) => Promise<unknown>;
 type ObjectArg = (value: Record<string, unknown>) => Promise<unknown>;
@@ -204,7 +204,25 @@ describe("composed tools", () => {
   });
 
   test("getCardDetails resolves board labels, task stats, sorted comments, and analysis", async () => {
-    getCardWithIncluded.mockResolvedValueOnce({ item: card, included: {} });
+    getCardWithIncluded.mockResolvedValueOnce({
+      item: card,
+      included: {
+        attachments: [
+          fileAttachment,
+          {
+            ...fileAttachment,
+            id: "attachment-legacy",
+            name: "legacy.pdf",
+            data: {
+              mimeType: "application/pdf",
+              sizeInBytes: 1024,
+              url: "https://planka.example.test/attachments/attachment-legacy/download/legacy.pdf",
+            },
+          },
+          { ...fileAttachment, id: "attachment-other", cardId: "card-other" },
+        ],
+      },
+    });
     getTasks.mockResolvedValueOnce([task, { ...task, id: "task-2", isCompleted: true }]);
     getComments.mockResolvedValueOnce([
       { ...comment, id: "comment-old", text: "Old", createdAt: "2026-07-04T09:00:00.000Z" },
@@ -234,6 +252,32 @@ describe("composed tools", () => {
     });
     expect(details.comments.map((item) => item.id)).toEqual(["comment-new", "comment-old"]);
     expect(details.labels).toEqual([label]);
+    expect(details.attachments).toEqual([
+      {
+        id: "attachment-1",
+        cardId: "card-1",
+        creatorUserId: "user-1",
+        name: "plan.pdf",
+        type: "file",
+        mimeType: "application/pdf",
+        size: 2048,
+        url: "https://planka.example.test/attachments/attachment-1/download/plan.pdf",
+        createdAt: "2026-07-04T08:00:00.000Z",
+        updatedAt: null,
+      },
+      {
+        id: "attachment-legacy",
+        cardId: "card-1",
+        creatorUserId: "user-1",
+        name: "legacy.pdf",
+        type: "file",
+        mimeType: "application/pdf",
+        size: 1024,
+        url: "https://planka.example.test/attachments/attachment-legacy/download/legacy.pdf",
+        createdAt: "2026-07-04T08:00:00.000Z",
+        updatedAt: null,
+      },
+    ]);
     expect(details.analysis).toEqual({
       hasRecentHumanFeedback: true,
       isComplete: false,

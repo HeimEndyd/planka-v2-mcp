@@ -79,6 +79,23 @@ export const comment = {
   updatedAt: null,
 };
 
+export const fileAttachment = {
+  id: "attachment-1",
+  cardId: "card-1",
+  creatorUserId: "user-1",
+  name: "plan.pdf",
+  type: "file",
+  data: {
+    mimeType: "application/pdf",
+    size: 2048,
+    encoding: null,
+    image: null,
+    url: "https://planka.example.test/attachments/attachment-1/download/plan.pdf",
+  },
+  createdAt: "2026-07-04T08:00:00.000Z",
+  updatedAt: null,
+};
+
 export const cardMembership = {
   id: "card-membership-1",
   cardId: "card-1",
