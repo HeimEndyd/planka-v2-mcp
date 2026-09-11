@@ -3,6 +3,7 @@ import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/
 import { z } from "zod";
 import { loadAttachment, loadedAttachmentToResource } from "../common/attachment-loader.js";
 import { buildAttachmentResourceUri } from "../operations/attachments.js";
+import type { IdentityRunner } from "../resources/attachments.js";
 
 export const readAttachmentSchema = z.object({
   cardId: z
@@ -42,7 +43,10 @@ export async function readAttachment(params: ReadAttachmentParams): Promise<Call
   };
 }
 
-export function registerAttachmentTool(server: McpServer): void {
+export function registerAttachmentTool(
+  server: McpServer,
+  runAsIdentity: IdentityRunner = (callback) => callback(),
+): void {
   const registerTool = server.registerTool.bind(server) as (
     name: string,
     config: {
@@ -77,6 +81,7 @@ export function registerAttachmentTool(server: McpServer): void {
         openWorldHint: false,
       },
     },
-    async ({ cardId, attachmentId }) => readAttachment({ cardId, attachmentId }),
+    async ({ cardId, attachmentId }) =>
+      runAsIdentity(() => readAttachment({ cardId, attachmentId })),
   );
 }

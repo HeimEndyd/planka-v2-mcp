@@ -1,5 +1,26 @@
 import { readFileSync } from "node:fs";
 
+export function readSecretFile(
+  filePath: string,
+  description: string,
+  preserveWhitespace = false,
+): string {
+  let fileValue: string;
+  try {
+    const rawFileValue = readFileSync(filePath, "utf8");
+    fileValue = preserveWhitespace ? rawFileValue.replace(/\r?\n$/, "") : rawFileValue.trim();
+  } catch (error: unknown) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to read ${description}: ${reason}`);
+  }
+
+  if (!fileValue) {
+    throw new Error(`${description} points to an empty secret file`);
+  }
+
+  return fileValue;
+}
+
 export function readEnvironmentSecret(
   name: string,
   environment: NodeJS.ProcessEnv = process.env,
@@ -22,18 +43,5 @@ export function readEnvironmentSecret(
     return undefined;
   }
 
-  let fileValue: string;
-  try {
-    const rawFileValue = readFileSync(filePath, "utf8");
-    fileValue = preserveWhitespace ? rawFileValue.replace(/\r?\n$/, "") : rawFileValue.trim();
-  } catch (error: unknown) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to read ${fileVariable}: ${reason}`);
-  }
-
-  if (!fileValue) {
-    throw new Error(`${fileVariable} points to an empty secret file`);
-  }
-
-  return fileValue;
+  return readSecretFile(filePath, fileVariable, preserveWhitespace);
 }

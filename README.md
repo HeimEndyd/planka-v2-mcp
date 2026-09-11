@@ -76,6 +76,7 @@ This MCP server exposes the Planka v2 API through the Model Context Protocol (MC
 - Project and board summaries
 - MCP-native tool interface
 - Remote Streamable HTTP and backwards-compatible local STDIO transports
+- Multiple bearer identities with isolated Planka accounts and safe `whoami`
 - Support for major MCP clients
 - Self-hosted and cloud Planka support
 <details>
@@ -202,7 +203,7 @@ HTTP is opt-in; STDIO remains the executable default. Build and run the producti
 TLS reverse proxy:
 
 ```bash
-docker build -t planka-v2-mcp:1.1.0 .
+docker build -t planka-v2-mcp:1.2.0 .
 docker run --rm --name planka-mcp -p 127.0.0.1:3000:3000 \
   -e PLANKA_BASE_URL=https://planka.example.com \
   -e PLANKA_API_KEY_FILE=/run/secrets/planka_api_key \
@@ -210,13 +211,49 @@ docker run --rm --name planka-mcp -p 127.0.0.1:3000:3000 \
   -e MCP_HTTP_ALLOWED_HOSTS=planka.example.com \
   -v /secure/planka_api_key:/run/secrets/planka_api_key:ro \
   -v /secure/mcp_http_bearer_token:/run/secrets/mcp_http_bearer_token:ro \
-  planka-v2-mcp:1.1.0
+  planka-v2-mcp:1.2.0
 ```
 
 The container serves MCP at `/mcp` and an unauthenticated health probe at `/healthz`. Route only
 `/mcp` through the public reverse proxy. Keep the health endpoint internal. Generate a separate
 client bearer with at least 32 bytes of entropy, for example `openssl rand -hex 32`; never reuse the
 Planka API key as the client bearer.
+
+### Multiple Planka accounts
+
+One HTTP endpoint can map different client bearers to different Planka accounts. Set
+`MCP_HTTP_IDENTITIES_FILE` instead of the legacy `MCP_HTTP_BEARER_TOKEN*` and `PLANKA_*`
+credential variables:
+
+```json
+{
+  "version": 1,
+  "identities": [
+    {
+      "id": "owner",
+      "plankaUserId": "1234567890",
+      "mcpBearerTokenFile": "/run/secrets/owner_mcp_bearer",
+      "plankaApiKeyFile": "/run/secrets/owner_planka_api_key"
+    },
+    {
+      "id": "reader",
+      "plankaUserId": "0987654321",
+      "mcpBearerTokenFile": "/run/secrets/reader_mcp_bearer",
+      "plankaApiKeyFile": "/run/secrets/reader_planka_api_key"
+    }
+  ]
+}
+```
+
+The descriptor contains no raw credentials. Every referenced path must be absolute and mounted
+read-only. An identity can use `plankaEmailFile` plus `plankaPasswordFile` instead of
+`plankaApiKeyFile` during migration, but the two upstream authentication modes cannot be mixed.
+All identities are validated before the server starts. Duplicate IDs or bearers, short bearers,
+unreadable secrets, and mixing identity mode with legacy credential variables fail closed.
+
+Clients use the same URL with different bearer values. A client that needs both roles can register
+two MCP server aliases. `mcp_kanban_whoami` reports the selected identity and safe account metadata
+without returning any token, key, password, or authorization header.
 
 Codex remote configuration:
 
@@ -460,6 +497,7 @@ with `PLANKA_BASE_URL` and either `PLANKA_API_KEY` or the email/password pair se
 | `PLANKA_AGENT_PASSWORD`             | conditional |    -    | Password when an API key is not set                           |
 | `PLANKA_AGENT_EMAIL_FILE`           | conditional |    -    | File containing the fallback login email                      |
 | `PLANKA_AGENT_PASSWORD_FILE`        | conditional |    -    | File containing the fallback login password                   |
+| `PLANKA_USER_ID`                    |      ❌      |    -    | Legacy-mode account ID reported and verified by `whoami`       |
 | `PLANKA_ATTACHMENT_ALLOWED_ORIGINS` |      ❌      |    -    | Comma-separated HTTPS origins for S3-backed attachments       |
 | `PLANKA_ATTACHMENT_TIMEOUT_MS`      |      ❌      | `30000` | Attachment download timeout in milliseconds                   |
 | `PLANKA_IGNORE_SSL`                 |      ❌      | `false` | Skip SSL verification - self-signed/local certificates only   |
@@ -468,6 +506,7 @@ with `PLANKA_BASE_URL` and either `PLANKA_API_KEY` or the email/password pair se
 | `MCP_HTTP_PORT`                     |      ❌      | `3000`  | HTTP listen port                                              |
 | `MCP_HTTP_BEARER_TOKEN`             | conditional |    -    | Incoming client bearer; required for non-loopback HTTP         |
 | `MCP_HTTP_BEARER_TOKEN_FILE`        | conditional |    -    | File containing the incoming client bearer                    |
+| `MCP_HTTP_IDENTITIES_FILE`          | conditional |    -    | Multi-account descriptor; replaces legacy bearer/credentials  |
 | `MCP_HTTP_ALLOWED_HOSTS`            | conditional | loopback | Comma-separated Host allowlist; required for public bind    |
 | `MCP_HTTP_ALLOWED_ORIGINS`          |      ❌      |    -    | Allowed browser Origins; supplied Origins otherwise fail       |
 | `MCP_HTTP_MAX_BODY_BYTES`           |      ❌      | `1048576` | Maximum JSON-RPC request body                                |

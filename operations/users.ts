@@ -22,6 +22,7 @@ const UserSchema = z.object({
   name: z.string().nullable().optional(),
   username: z.string().nullable().optional(),
   avatarUrl: z.string().nullable().optional(),
+  isAdmin: z.boolean().optional(),
 });
 
 const UsersResponseSchema = z.object({

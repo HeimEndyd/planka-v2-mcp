@@ -1,8 +1,13 @@
-import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import {
+  createLegacyIdentityRegistry,
+  type IdentityRegistry,
+  loadIdentityRegistry,
+  type McpIdentity,
+} from "../common/identity-registry.js";
 import { readEnvironmentSecret } from "../common/secrets.js";
 import { VERSION } from "../common/version.js";
 import { createPlankaMcpServer } from "../server.js";
@@ -13,7 +18,7 @@ const DEFAULT_SHUTDOWN_GRACE_MS = 10_000;
 export type HttpTransportConfig = {
   host: string;
   port: number;
-  bearerToken: string | undefined;
+  identityRegistry: IdentityRegistry;
   allowedHosts: ReadonlySet<string>;
   allowedOrigins: ReadonlySet<string>;
   maxBodyBytes: number;
@@ -26,7 +31,18 @@ export type RunningHttpServer = {
   close: () => Promise<void>;
 };
 
-type ServerFactory = () => McpServer;
+type ServerFactory = (identity: McpIdentity) => McpServer;
+
+const LEGACY_IDENTITY_VARIABLES = [
+  "MCP_HTTP_BEARER_TOKEN",
+  "MCP_HTTP_BEARER_TOKEN_FILE",
+  "PLANKA_API_KEY",
+  "PLANKA_API_KEY_FILE",
+  "PLANKA_AGENT_EMAIL",
+  "PLANKA_AGENT_EMAIL_FILE",
+  "PLANKA_AGENT_PASSWORD",
+  "PLANKA_AGENT_PASSWORD_FILE",
+] as const;
 
 function isLoopbackHost(host: string): boolean {
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
@@ -87,12 +103,25 @@ export function loadHttpTransportConfig(
   const allowedOrigins = new Set(
     parseCsv(environment.MCP_HTTP_ALLOWED_ORIGINS).map(normalizeOrigin),
   );
-  const bearerToken = readEnvironmentSecret("MCP_HTTP_BEARER_TOKEN", environment);
+  const identitiesFile = environment.MCP_HTTP_IDENTITIES_FILE?.trim();
+  let bearerToken: string | undefined;
+  let identityRegistry: IdentityRegistry;
 
-  if (!isLoopbackHost(host) && !bearerToken) {
-    throw new Error(
-      "MCP_HTTP_BEARER_TOKEN or MCP_HTTP_BEARER_TOKEN_FILE is required for non-loopback HTTP bind",
-    );
+  if (identitiesFile) {
+    const conflictingVariable = LEGACY_IDENTITY_VARIABLES.find((name) => environment[name]?.trim());
+    if (conflictingVariable) {
+      throw new Error(
+        `MCP_HTTP_IDENTITIES_FILE cannot be combined with legacy ${conflictingVariable}`,
+      );
+    }
+    identityRegistry = loadIdentityRegistry(identitiesFile, environment);
+  } else {
+    bearerToken = readEnvironmentSecret("MCP_HTTP_BEARER_TOKEN", environment);
+    identityRegistry = createLegacyIdentityRegistry(bearerToken, environment);
+  }
+
+  if (!isLoopbackHost(host) && !identityRegistry.requiresBearer) {
+    throw new Error("MCP bearer authentication is required for non-loopback HTTP bind");
   }
   if (bearerToken && Buffer.byteLength(bearerToken, "utf8") < 32) {
     throw new Error("MCP_HTTP_BEARER_TOKEN must contain at least 32 bytes");
@@ -104,7 +133,7 @@ export function loadHttpTransportConfig(
   return {
     host,
     port: parsePort(environment.MCP_HTTP_PORT),
-    bearerToken,
+    identityRegistry,
     allowedHosts,
     allowedOrigins,
     maxBodyBytes: parsePositiveInteger(
@@ -157,16 +186,6 @@ function isAllowedOrigin(request: IncomingMessage, allowedOrigins: ReadonlySet<s
   }
 }
 
-function matchesBearer(header: string | undefined, expected: string | undefined): boolean {
-  if (!expected) return true;
-  if (!header) return false;
-  const match = /^Bearer\s+([^\s]+)$/i.exec(header);
-  if (!match?.[1]) return false;
-  const suppliedDigest = createHash("sha256").update(match[1]).digest();
-  const expectedDigest = createHash("sha256").update(expected).digest();
-  return timingSafeEqual(suppliedDigest, expectedDigest);
-}
-
 async function readJsonBody(request: IncomingMessage, maxBytes: number): Promise<unknown> {
   const contentLength = request.headers["content-length"];
   if (contentLength !== undefined) {
@@ -190,10 +209,38 @@ async function readJsonBody(request: IncomingMessage, maxBytes: number): Promise
   }
 }
 
+function auditRequest(body: unknown): { method: string; tool?: string } {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { method: "unknown" };
+  const request = body as { method?: unknown; params?: { name?: unknown } };
+  const method = typeof request.method === "string" ? request.method : "unknown";
+  const tool =
+    method === "tools/call" && typeof request.params?.name === "string"
+      ? request.params.name
+      : undefined;
+  return tool ? { method, tool } : { method };
+}
+
+function writeAudit(
+  identity: McpIdentity,
+  body: unknown,
+  status: "ok" | "error",
+  startedAt: number,
+): void {
+  console.error(
+    JSON.stringify({
+      event: "mcp_request",
+      identityId: identity.id,
+      ...auditRequest(body),
+      status,
+      durationMs: Date.now() - startedAt,
+    }),
+  );
+}
+
 export function createHttpRequestHandler(
   config: HttpTransportConfig,
   activeServers: Set<McpServer>,
-  serverFactory: ServerFactory = createPlankaMcpServer,
+  serverFactory: ServerFactory = (identity) => createPlankaMcpServer(identity),
 ): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
   return async (request, response) => {
     const path = requestPath(request);
@@ -219,7 +266,8 @@ export function createHttpRequestHandler(
       return;
     }
 
-    if (!matchesBearer(request.headers.authorization, config.bearerToken)) {
+    const identity = config.identityRegistry.authenticate(request.headers.authorization);
+    if (!identity) {
       response.setHeader("WWW-Authenticate", 'Bearer realm="planka-mcp"');
       writeJson(response, 401, { error: "unauthorized" });
       return;
@@ -260,14 +308,18 @@ export function createHttpRequestHandler(
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined as unknown as () => string,
     });
-    const mcpServer = serverFactory();
+    const mcpServer = serverFactory(identity);
+    const startedAt = Date.now();
+    let auditStatus: "ok" | "error" = "ok";
     activeServers.add(mcpServer);
     try {
       await mcpServer.connect(transport as Parameters<McpServer["connect"]>[0]);
       await transport.handleRequest(request, response, body);
     } catch {
+      auditStatus = "error";
       writeJson(response, 500, { error: "internal_server_error" });
     } finally {
+      writeAudit(identity, body, auditStatus, startedAt);
       activeServers.delete(mcpServer);
       await mcpServer.close().catch(() => undefined);
     }
@@ -294,7 +346,7 @@ function closeListener(server: Server): Promise<void> {
 
 export async function startHttpServer(
   config: HttpTransportConfig = loadHttpTransportConfig(),
-  serverFactory: ServerFactory = createPlankaMcpServer,
+  serverFactory: ServerFactory = (identity) => createPlankaMcpServer(identity),
 ): Promise<RunningHttpServer> {
   const activeServers = new Set<McpServer>();
   const handler = createHttpRequestHandler(config, activeServers, serverFactory);
