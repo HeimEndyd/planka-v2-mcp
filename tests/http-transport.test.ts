@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { createLegacyIdentityRegistry } from "../common/identity-registry.js";
 import type { HttpTransportConfig, RunningHttpServer } from "../transports/http.js";
 import { loadHttpTransportConfig, startHttpServer } from "../transports/http.js";
 
@@ -11,7 +12,8 @@ function testConfig(overrides: Partial<HttpTransportConfig> = {}): HttpTransport
   return {
     host: "127.0.0.1",
     port: 0,
-    bearerToken: TOKEN,
+    authMode: "managed",
+    authenticator: createLegacyIdentityRegistry(TOKEN, {}),
     allowedHosts: new Set(["127.0.0.1"]),
     allowedOrigins: new Set(),
     maxBodyBytes: 1024,
@@ -31,20 +33,22 @@ afterEach(async () => {
 });
 
 describe("HTTP transport configuration", () => {
-  test("fails closed on a public bind without a bearer", () => {
-    expect(() =>
-      loadHttpTransportConfig({
-        MCP_HTTP_HOST: "0.0.0.0",
-        MCP_HTTP_ALLOWED_HOSTS: "planka.example.com",
-      }),
-    ).toThrow("required for non-loopback HTTP bind");
+  test("defaults to Planka API-key passthrough without server-side credentials", () => {
+    const config = loadHttpTransportConfig({
+      MCP_HTTP_HOST: "0.0.0.0",
+      MCP_HTTP_ALLOWED_HOSTS: "planka.example.com",
+      PLANKA_BASE_URL: "https://planka.example.com",
+    });
+
+    expect(config.authMode).toBe("passthrough");
+    expect(config.authenticator.requiresBearer).toBe(true);
   });
 
   test("requires explicit allowed hosts for a public bind", () => {
     expect(() =>
       loadHttpTransportConfig({
         MCP_HTTP_HOST: "0.0.0.0",
-        MCP_HTTP_BEARER_TOKEN: TOKEN,
+        MCP_HTTP_AUTH_MODE: "passthrough",
       }),
     ).toThrow("MCP_HTTP_ALLOWED_HOSTS is required");
   });
@@ -53,14 +57,61 @@ describe("HTTP transport configuration", () => {
     const config = loadHttpTransportConfig({
       MCP_HTTP_HOST: "0.0.0.0",
       MCP_HTTP_PORT: "3008",
+      MCP_HTTP_AUTH_MODE: "managed",
       MCP_HTTP_BEARER_TOKEN: TOKEN,
       MCP_HTTP_ALLOWED_HOSTS: "planka.example.com",
       MCP_HTTP_ALLOWED_ORIGINS: "https://planka.example.com",
     });
 
     expect(config.port).toBe(3008);
+    expect(config.authMode).toBe("managed");
     expect(config.allowedHosts.has("planka.example.com")).toBe(true);
     expect(config.allowedOrigins.has("https://planka.example.com")).toBe(true);
+  });
+
+  test("infers managed mode for backwards-compatible credentials", () => {
+    const config = loadHttpTransportConfig({
+      MCP_HTTP_BEARER_TOKEN: TOKEN,
+      PLANKA_API_KEY: "server-side-planka-key",
+    });
+
+    expect(config.authMode).toBe("managed");
+  });
+
+  test("fails closed on a public managed bind without a bearer", () => {
+    expect(() =>
+      loadHttpTransportConfig({
+        MCP_HTTP_HOST: "0.0.0.0",
+        MCP_HTTP_AUTH_MODE: "managed",
+        MCP_HTTP_ALLOWED_HOSTS: "planka.example.com",
+      }),
+    ).toThrow("required for non-loopback HTTP bind");
+  });
+
+  test("rejects ambiguous identity-file and legacy configuration", () => {
+    expect(() =>
+      loadHttpTransportConfig({
+        MCP_HTTP_HOST: "0.0.0.0",
+        MCP_HTTP_ALLOWED_HOSTS: "planka.example.com",
+        MCP_HTTP_IDENTITIES_FILE: "/run/secrets/identities.json",
+        MCP_HTTP_BEARER_TOKEN: TOKEN,
+      }),
+    ).toThrow("cannot be combined with legacy MCP_HTTP_BEARER_TOKEN");
+  });
+
+  test("rejects managed credentials in explicit passthrough mode", () => {
+    expect(() =>
+      loadHttpTransportConfig({
+        MCP_HTTP_AUTH_MODE: "passthrough",
+        MCP_HTTP_BEARER_TOKEN: TOKEN,
+      }),
+    ).toThrow("cannot be combined with MCP_HTTP_BEARER_TOKEN");
+  });
+
+  test("rejects an unknown HTTP authentication mode", () => {
+    expect(() => loadHttpTransportConfig({ MCP_HTTP_AUTH_MODE: "unknown" })).toThrow(
+      'must be "passthrough" or "managed"',
+    );
   });
 });
 
@@ -71,7 +122,7 @@ describe("Streamable HTTP server", () => {
     const response = await fetch(new URL("/healthz", running.endpoint));
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ status: "ok", version: "1.1.0" });
+    await expect(response.json()).resolves.toMatchObject({ status: "ok", version: "1.2.0" });
   });
 
   test("rejects missing authentication before parsing JSON", async () => {
@@ -127,15 +178,41 @@ describe("Streamable HTTP server", () => {
       await client.connect(transport as Parameters<Client["connect"]>[0]);
       const tools = await client.listTools();
       const templates = await client.listResourceTemplates();
+      const whoami = await client.callTool({ name: "mcp_kanban_whoami", arguments: {} });
 
       expect(tools.tools.map((tool) => tool.name)).toEqual(
-        expect.arrayContaining(["mcp_kanban_card_manager", "mcp_kanban_attachment_manager"]),
+        expect.arrayContaining([
+          "mcp_kanban_card_manager",
+          "mcp_kanban_attachment_manager",
+          "mcp_kanban_whoami",
+        ]),
       );
       expect(templates.resourceTemplates).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ uriTemplate: "planka-attachment://{cardId}/{attachmentId}" }),
         ]),
       );
+      expect(whoami.content).toEqual([
+        {
+          type: "text",
+          text: JSON.stringify({
+            identityId: "default",
+            plankaUserId: null,
+            authMode: "none",
+            account: null,
+          }),
+        },
+      ]);
+
+      const auditLines = (console.error as jest.Mock).mock.calls.map(([line]) => String(line));
+      expect(auditLines).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining(
+            '"identityId":"default","method":"tools/call","tool":"mcp_kanban_whoami"',
+          ),
+        ]),
+      );
+      expect(auditLines.join("\n")).not.toContain(TOKEN);
     } finally {
       await client.close();
     }

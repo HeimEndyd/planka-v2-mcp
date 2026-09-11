@@ -76,6 +76,7 @@ This MCP server exposes the Planka v2 API through the Model Context Protocol (MC
 - Project and board summaries
 - MCP-native tool interface
 - Remote Streamable HTTP and backwards-compatible local STDIO transports
+- Multiple bearer identities with isolated Planka accounts and safe `whoami`
 - Support for major MCP clients
 - Self-hosted and cloud Planka support
 <details>
@@ -187,9 +188,9 @@ different hosts and attachment reads through the alias are rejected.
 
 Choose one deployment model:
 
-- **Central server:** deploy once and connect clients through Streamable HTTP. Clients need only the
-  HTTPS URL and a dedicated MCP bearer; they do not need Node.js, the npm package, or Planka
-  credentials.
+- **Central server:** deploy once and connect clients through Streamable HTTP. By default, clients
+  need only the HTTPS URL and their own Planka user API key; they do not need Node.js or the npm
+  package.
 - **Local process:** keep the backwards-compatible STDIO setup when every client should run its own
   package instance.
 
@@ -202,39 +203,53 @@ HTTP is opt-in; STDIO remains the executable default. Build and run the producti
 TLS reverse proxy:
 
 ```bash
-docker build -t planka-v2-mcp:1.1.0 .
+docker build -t planka-v2-mcp:1.2.0 .
 docker run --rm --name planka-mcp -p 127.0.0.1:3000:3000 \
   -e PLANKA_BASE_URL=https://planka.example.com \
-  -e PLANKA_API_KEY_FILE=/run/secrets/planka_api_key \
-  -e MCP_HTTP_BEARER_TOKEN_FILE=/run/secrets/mcp_http_bearer_token \
   -e MCP_HTTP_ALLOWED_HOSTS=planka.example.com \
-  -v /secure/planka_api_key:/run/secrets/planka_api_key:ro \
-  -v /secure/mcp_http_bearer_token:/run/secrets/mcp_http_bearer_token:ro \
-  planka-v2-mcp:1.1.0
+  planka-v2-mcp:1.2.0
 ```
 
 The container serves MCP at `/mcp` and an unauthenticated health probe at `/healthz`. Route only
-`/mcp` through the public reverse proxy. Keep the health endpoint internal. Generate a separate
-client bearer with at least 32 bytes of entropy, for example `openssl rand -hex 32`; never reuse the
-Planka API key as the client bearer.
+`/mcp` through the public reverse proxy and keep the health endpoint internal.
 
-Codex remote configuration:
+### Default: Planka API-key passthrough
+
+With no managed authentication variables configured, HTTP uses passthrough mode. The client sends
+its Planka user API key as the bearer. Before parsing JSON-RPC, the server validates the key through
+`GET /api/users/me`, derives the audit identity from the returned user ID, and uses the same secret
+as `X-Api-Key` for only that request's API calls and attachment downloads.
+
+The MCP server does not store account credentials, and a newly issued Planka API key works without
+a server configuration change or restart. Missing, invalid, and revoked keys return 401 before
+JSON-RPC parsing. If Planka is unavailable for validation, the server returns 503.
+
+Clients use the same URL with different Planka API keys. A client that needs two roles can register
+two MCP server aliases. `mcp_kanban_whoami` reports the authenticated Planka account without
+returning the key or authorization header.
+
+> [!IMPORTANT]
+> A passthrough client holds a full Planka credential and can call the Planka API directly with the
+> same account permissions. Use dedicated least-privilege Planka users. The MCP server does not add
+> scopes beyond Planka's own project, board, and membership authorization.
+
+Codex remote configuration, where `PLANKA_API_KEY` is held in the client's environment:
 
 ```toml
 [mcp_servers.planka-mcp]
 url = "https://planka.example.com/mcp"
-bearer_token_env_var = "PLANKA_MCP_CLIENT_TOKEN"
+bearer_token_env_var = "PLANKA_API_KEY"
 ```
 
-VS Code `.vscode/mcp.json` configuration with secret storage:
+VS Code `.vscode/mcp.json` configuration with secret input:
 
 ```json
 {
   "inputs": [
     {
       "type": "promptString",
-      "id": "planka-mcp-token",
-      "description": "Planka MCP access token",
+      "id": "planka-api-key",
+      "description": "Planka user API key",
       "password": true
     }
   ],
@@ -243,12 +258,49 @@ VS Code `.vscode/mcp.json` configuration with secret storage:
       "type": "http",
       "url": "https://planka.example.com/mcp",
       "headers": {
-        "Authorization": "Bearer ${input:planka-mcp-token}"
+        "Authorization": "Bearer ${input:planka-api-key}"
       }
     }
   }
 }
 ```
+
+### Optional: managed identities
+
+Managed mode keeps the Planka credential on the MCP server and gives the client a separate MCP
+bearer. Use it when a client must not receive the upstream credential, MCP access must be revoked
+independently, or several client bearers need to share one Planka account. Set
+`MCP_HTTP_AUTH_MODE=managed` and `MCP_HTTP_IDENTITIES_FILE`:
+
+```json
+{
+  "version": 1,
+  "identities": [
+    {
+      "id": "owner",
+      "plankaUserId": "1234567890",
+      "mcpBearerTokenFile": "/run/secrets/owner_mcp_bearer",
+      "plankaApiKeyFile": "/run/secrets/owner_planka_api_key"
+    },
+    {
+      "id": "reader",
+      "plankaUserId": "0987654321",
+      "mcpBearerTokenFile": "/run/secrets/reader_mcp_bearer",
+      "plankaApiKeyFile": "/run/secrets/reader_planka_api_key"
+    }
+  ]
+}
+```
+
+The descriptor contains no raw credentials. Every referenced path must be absolute and mounted
+read-only. An identity can use `plankaEmailFile` plus `plankaPasswordFile` instead of
+`plankaApiKeyFile` during migration, but the two upstream authentication modes cannot be mixed.
+All identities are validated before the server starts. Duplicate IDs or bearers, short bearers,
+unreadable secrets, and mixing identity mode with legacy credential variables fail closed.
+
+For backwards compatibility, configuring an identities file, a legacy MCP bearer, or legacy
+`PLANKA_*` credentials without `MCP_HTTP_AUTH_MODE` automatically selects managed mode. Explicit
+passthrough mode rejects all managed credentials instead of silently ignoring them.
 
 HTTP mode is stateless: each POST gets a fresh MCP server instance. GET and DELETE on `/mcp` return
 405 because this server currently has no subscriptions, resumability, or server notifications.
@@ -460,14 +512,17 @@ with `PLANKA_BASE_URL` and either `PLANKA_API_KEY` or the email/password pair se
 | `PLANKA_AGENT_PASSWORD`             | conditional |    -    | Password when an API key is not set                           |
 | `PLANKA_AGENT_EMAIL_FILE`           | conditional |    -    | File containing the fallback login email                      |
 | `PLANKA_AGENT_PASSWORD_FILE`        | conditional |    -    | File containing the fallback login password                   |
+| `PLANKA_USER_ID`                    |      ❌      |    -    | Legacy-mode account ID reported and verified by `whoami`       |
 | `PLANKA_ATTACHMENT_ALLOWED_ORIGINS` |      ❌      |    -    | Comma-separated HTTPS origins for S3-backed attachments       |
 | `PLANKA_ATTACHMENT_TIMEOUT_MS`      |      ❌      | `30000` | Attachment download timeout in milliseconds                   |
 | `PLANKA_IGNORE_SSL`                 |      ❌      | `false` | Skip SSL verification - self-signed/local certificates only   |
 | `MCP_TRANSPORT`                     |      ❌      | `stdio` | `stdio` or `http`                                             |
 | `MCP_HTTP_HOST`                     |      ❌      | `127.0.0.1` | HTTP bind address                                          |
 | `MCP_HTTP_PORT`                     |      ❌      | `3000`  | HTTP listen port                                              |
-| `MCP_HTTP_BEARER_TOKEN`             | conditional |    -    | Incoming client bearer; required for non-loopback HTTP         |
-| `MCP_HTTP_BEARER_TOKEN_FILE`        | conditional |    -    | File containing the incoming client bearer                    |
+| `MCP_HTTP_AUTH_MODE`                |      ❌      | `passthrough` | `passthrough` or `managed`; managed config is auto-detected |
+| `MCP_HTTP_BEARER_TOKEN`             | conditional |    -    | Separate client bearer for legacy managed mode                 |
+| `MCP_HTTP_BEARER_TOKEN_FILE`        | conditional |    -    | File containing the legacy managed client bearer               |
+| `MCP_HTTP_IDENTITIES_FILE`          | conditional |    -    | Managed multi-account descriptor                              |
 | `MCP_HTTP_ALLOWED_HOSTS`            | conditional | loopback | Comma-separated Host allowlist; required for public bind    |
 | `MCP_HTTP_ALLOWED_ORIGINS`          |      ❌      |    -    | Allowed browser Origins; supplied Origins otherwise fail       |
 | `MCP_HTTP_MAX_BODY_BYTES`           |      ❌      | `1048576` | Maximum JSON-RPC request body                                |
@@ -478,8 +533,10 @@ with `PLANKA_BASE_URL` and either `PLANKA_API_KEY` or the email/password pair se
 - Authentication is performed using a dedicated Planka user account and preferably its API key.
 - Credentials can be supplied directly or through mounted secret files; never configure both
   forms for the same secret.
-- HTTP clients authenticate with a separate bearer before JSON parsing. Public binds fail closed
-  without both the bearer and an explicit Host allowlist.
+- HTTP clients authenticate before JSON parsing. Passthrough validates the bearer as a Planka user
+  API key and keeps no server-side copy; managed mode uses a separate bearer and stored credential.
+- Passthrough does not reduce the key's native Planka permissions. A client holding the key can
+  call Planka directly, so use dedicated least-privilege accounts.
 - The MCP server does not persist board data outside the running process.
 - Link attachments are never fetched, file origins are allowlisted, and redirects are rejected.
 - SSL certificate verification is enabled by default.

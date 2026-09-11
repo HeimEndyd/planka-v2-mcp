@@ -1,6 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { z } from "zod";
+import type { McpIdentity } from "./common/http-authentication.js";
+import { createLegacyPlankaClient, runWithPlankaClient } from "./common/planka-client.js";
 import { getUserIdByEmail, getUserIdByUsername } from "./common/utils.js";
 import { VERSION } from "./common/version.js";
 // Import Planka operations
@@ -25,7 +27,15 @@ import {
   registerAttachmentTool,
 } from "./tools/index.js";
 
-export function createPlankaMcpServer(): McpServer {
+function createStdioIdentity(): McpIdentity {
+  return {
+    id: "stdio",
+    plankaUserId: process.env.PLANKA_USER_ID?.trim() || undefined,
+    plankaClient: createLegacyPlankaClient(),
+  };
+}
+
+export function createPlankaMcpServer(identity: McpIdentity = createStdioIdentity()): McpServer {
   const server = new McpServer(
     {
       name: "planka-mcp-server",
@@ -38,15 +48,60 @@ export function createPlankaMcpServer(): McpServer {
     },
   );
 
-  const registerTool = server.tool.bind(server) as (
+  const rawRegisterTool = server.tool.bind(server) as (
     name: string,
     description: string,
     paramsSchema: Record<string, z.ZodTypeAny>,
     cb: (args: any) => Promise<{ content: Array<{ type: "text"; text: string }> }>,
   ) => unknown;
+  const runAsIdentity = <T>(callback: () => T): T =>
+    runWithPlankaClient(identity.plankaClient, callback);
+  const registerTool = (
+    name: string,
+    description: string,
+    paramsSchema: Record<string, z.ZodTypeAny>,
+    callback: (args: any) => Promise<{ content: Array<{ type: "text"; text: string }> }>,
+  ): unknown =>
+    rawRegisterTool(name, description, paramsSchema, (args) => runAsIdentity(() => callback(args)));
 
-  registerAttachmentResources(server);
-  registerAttachmentTool(server);
+  registerAttachmentResources(server, runAsIdentity);
+  registerAttachmentTool(server, runAsIdentity);
+
+  registerTool(
+    "mcp_kanban_whoami",
+    "Show the MCP identity and its configured Planka account without exposing credentials",
+    {},
+    async () => {
+      let account: Record<string, unknown> | null = identity.account ?? null;
+      if (!account && (identity.plankaUserId || identity.plankaClient.authMode !== "none")) {
+        const response = (await users.getUser(identity.plankaUserId ?? "me")) as Record<
+          string,
+          unknown
+        >;
+        const item = (response.item ?? response) as Record<string, unknown>;
+        account = {
+          id: item.id,
+          name: item.name,
+          username: item.username,
+          isAdmin: item.isAdmin,
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              identityId: identity.id,
+              plankaUserId: identity.plankaUserId ?? null,
+              authMode: identity.plankaClient.authMode,
+              account,
+            }),
+          },
+        ],
+      };
+    },
+  );
 
   // ----- CONSOLIDATED KANBAN TOOLS -----
 

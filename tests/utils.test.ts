@@ -129,6 +129,7 @@ describe("common utils", () => {
   test("plankaRequest prefers a user API key without logging in", async () => {
     process.env.PLANKA_BASE_URL = "https://planka.example";
     process.env.PLANKA_API_KEY = "api-key-1";
+    process.env.PLANKA_AGENT_PASSWORD_FILE = "/missing/unused-password";
     const fetchMock = jest.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ items: [] }), {
         status: 200,
