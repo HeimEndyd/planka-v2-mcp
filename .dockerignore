@@ -1,0 +1,12 @@
+.git
+.github
+.env
+.seed-dist
+dist
+node_modules
+coverage
+dev
+openspec
+scripts
+tests
+*.log

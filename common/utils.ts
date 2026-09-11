@@ -1,5 +1,6 @@
 import { getUserAgent } from "universal-user-agent";
 import { createPlankaError } from "./errors.js";
+import { readEnvironmentSecret } from "./secrets.js";
 import { VERSION } from "./version.js";
 
 // Global variables to store tokens
@@ -36,13 +37,11 @@ export function buildUrl(
 const USER_AGENT = `modelcontextprotocol/servers/planka/v${VERSION} ${getUserAgent()}`;
 
 async function authenticateAgent(): Promise<string> {
-  const email = process.env.PLANKA_AGENT_EMAIL;
-  const password = process.env.PLANKA_AGENT_PASSWORD;
+  const email = readEnvironmentSecret("PLANKA_AGENT_EMAIL");
+  const password = readEnvironmentSecret("PLANKA_AGENT_PASSWORD", process.env, true);
 
   if (!email || !password) {
-    throw new Error(
-      "PLANKA_AGENT_EMAIL and PLANKA_AGENT_PASSWORD environment variables are required",
-    );
+    throw new Error("PLANKA_AGENT_EMAIL and PLANKA_AGENT_PASSWORD values or files are required");
   }
 
   const baseUrl = process.env.PLANKA_BASE_URL || "http://localhost:3000";
@@ -100,7 +99,7 @@ export type PlankaAuthTarget = "api" | "download";
 export async function getPlankaAuthHeaders(
   target: PlankaAuthTarget = "api",
 ): Promise<Record<string, string>> {
-  const apiKey = process.env.PLANKA_API_KEY?.trim();
+  const apiKey = readEnvironmentSecret("PLANKA_API_KEY");
   if (apiKey) {
     return { "X-Api-Key": apiKey };
   }

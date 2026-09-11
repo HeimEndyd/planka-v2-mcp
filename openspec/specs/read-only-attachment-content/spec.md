@@ -86,3 +86,13 @@ The server SHALL prefer `PLANKA_API_KEY` when configured and preserve email/pass
 - **WHEN** no API key is set and valid agent credentials are configured
 - **THEN** API requests use Bearer authentication and attachment downloads use the `accessToken`
   cookie
+
+### Requirement: Transport-independent attachment reads
+
+The server SHALL expose identical attachment tool and resource behavior over STDIO and Streamable
+HTTP.
+
+#### Scenario: Remote attachment resource read
+
+- **WHEN** an authenticated Streamable HTTP client reads a supported attachment resource
+- **THEN** the server applies the same membership, origin, MIME, and size checks as STDIO

@@ -8,8 +8,11 @@ describe("common utils", () => {
     process.env = { ...originalEnv };
     delete process.env.PLANKA_BASE_URL;
     delete process.env.PLANKA_AGENT_EMAIL;
+    delete process.env.PLANKA_AGENT_EMAIL_FILE;
     delete process.env.PLANKA_AGENT_PASSWORD;
+    delete process.env.PLANKA_AGENT_PASSWORD_FILE;
     delete process.env.PLANKA_API_KEY;
+    delete process.env.PLANKA_API_KEY_FILE;
     jest.spyOn(console, "error").mockImplementation(() => {});
   });
 

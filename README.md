@@ -75,6 +75,7 @@ This MCP server exposes the Planka v2 API through the Model Context Protocol (MC
 - Card time tracking
 - Project and board summaries
 - MCP-native tool interface
+- Remote Streamable HTTP and backwards-compatible local STDIO transports
 - Support for major MCP clients
 - Self-hosted and cloud Planka support
 <details>
@@ -165,6 +166,10 @@ and GIF up to 5 MiB; and PDF up to 10 MiB. Other MIME types, redirects, oversize
 unapproved origins are rejected. S3-backed deployments can explicitly allow additional HTTPS
 origins with `PLANKA_ATTACHMENT_ALLOWED_ORIGINS`.
 
+For Planka-hosted files, `PLANKA_BASE_URL` must use the same origin as Planka's canonical
+`BASE_URL`. Origin aliases such as `localhost` and `127.0.0.1` are intentionally treated as
+different hosts and attachment reads through the alias are rejected.
+
 ## Quick Start
 
 ### Requirements
@@ -180,7 +185,78 @@ origins with `PLANKA_ATTACHMENT_ALLOWED_ORIGINS`.
 
 ### Configure Your MCP Client
 
-Every MCP-compatible client uses the same underlying command - only the config file location (and occasionally the JSON wrapper) differs. See [Client Configuration Examples](#client-configuration-examples) below for your specific tool.
+Choose one deployment model:
+
+- **Central server:** deploy once and connect clients through Streamable HTTP. Clients need only the
+  HTTPS URL and a dedicated MCP bearer; they do not need Node.js, the npm package, or Planka
+  credentials.
+- **Local process:** keep the backwards-compatible STDIO setup when every client should run its own
+  package instance.
+
+See [Remote Streamable HTTP](#remote-streamable-http) or
+[Client Configuration Examples](#client-configuration-examples).
+
+## Remote Streamable HTTP
+
+HTTP is opt-in; STDIO remains the executable default. Build and run the production image behind a
+TLS reverse proxy:
+
+```bash
+docker build -t planka-v2-mcp:1.1.0 .
+docker run --rm --name planka-mcp -p 127.0.0.1:3000:3000 \
+  -e PLANKA_BASE_URL=https://planka.example.com \
+  -e PLANKA_API_KEY_FILE=/run/secrets/planka_api_key \
+  -e MCP_HTTP_BEARER_TOKEN_FILE=/run/secrets/mcp_http_bearer_token \
+  -e MCP_HTTP_ALLOWED_HOSTS=planka.example.com \
+  -v /secure/planka_api_key:/run/secrets/planka_api_key:ro \
+  -v /secure/mcp_http_bearer_token:/run/secrets/mcp_http_bearer_token:ro \
+  planka-v2-mcp:1.1.0
+```
+
+The container serves MCP at `/mcp` and an unauthenticated health probe at `/healthz`. Route only
+`/mcp` through the public reverse proxy. Keep the health endpoint internal. Generate a separate
+client bearer with at least 32 bytes of entropy, for example `openssl rand -hex 32`; never reuse the
+Planka API key as the client bearer.
+
+Codex remote configuration:
+
+```toml
+[mcp_servers.planka-mcp]
+url = "https://planka.example.com/mcp"
+bearer_token_env_var = "PLANKA_MCP_CLIENT_TOKEN"
+```
+
+VS Code `.vscode/mcp.json` configuration with secret storage:
+
+```json
+{
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "planka-mcp-token",
+      "description": "Planka MCP access token",
+      "password": true
+    }
+  ],
+  "servers": {
+    "planka": {
+      "type": "http",
+      "url": "https://planka.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${input:planka-mcp-token}"
+      }
+    }
+  }
+}
+```
+
+HTTP mode is stateless: each POST gets a fresh MCP server instance. GET and DELETE on `/mcp` return
+405 because this server currently has no subscriptions, resumability, or server notifications.
+
+## Local STDIO
+
+Every STDIO-compatible client uses the same underlying command; only the config file location and
+occasionally the JSON wrapper differ.
 
 The core config block is always:
 
@@ -199,7 +275,8 @@ The core config block is always:
 
 On Planka v2, a user API key is preferred for service integrations. Set
 `PLANKA_API_KEY` instead of `PLANKA_AGENT_EMAIL` and `PLANKA_AGENT_PASSWORD`; the server uses
-`X-Api-Key` for both API requests and attachment downloads.
+`X-Api-Key` for both API requests and attachment downloads. Server deployments can instead mount
+the key and set `PLANKA_API_KEY_FILE`; configuring both variants is rejected.
 
 <details>
 <summary><strong>Alternative: run from a local build</strong></summary>
@@ -378,16 +455,31 @@ with `PLANKA_BASE_URL` and either `PLANKA_API_KEY` or the email/password pair se
 | ----------------------------------- | :---------: | :-----: | ------------------------------------------------------------- |
 | `PLANKA_BASE_URL`                   |      ✅      |    -    | Full URL of your Planka instance                              |
 | `PLANKA_API_KEY`                    | conditional |    -    | Preferred Planka v2 user API key                              |
+| `PLANKA_API_KEY_FILE`               | conditional |    -    | File containing the Planka v2 user API key                    |
 | `PLANKA_AGENT_EMAIL`                | conditional |    -    | Login email when an API key is not set                        |
 | `PLANKA_AGENT_PASSWORD`             | conditional |    -    | Password when an API key is not set                           |
+| `PLANKA_AGENT_EMAIL_FILE`           | conditional |    -    | File containing the fallback login email                      |
+| `PLANKA_AGENT_PASSWORD_FILE`        | conditional |    -    | File containing the fallback login password                   |
 | `PLANKA_ATTACHMENT_ALLOWED_ORIGINS` |      ❌      |    -    | Comma-separated HTTPS origins for S3-backed attachments       |
 | `PLANKA_ATTACHMENT_TIMEOUT_MS`      |      ❌      | `30000` | Attachment download timeout in milliseconds                   |
 | `PLANKA_IGNORE_SSL`                 |      ❌      | `false` | Skip SSL verification - self-signed/local certificates only   |
+| `MCP_TRANSPORT`                     |      ❌      | `stdio` | `stdio` or `http`                                             |
+| `MCP_HTTP_HOST`                     |      ❌      | `127.0.0.1` | HTTP bind address                                          |
+| `MCP_HTTP_PORT`                     |      ❌      | `3000`  | HTTP listen port                                              |
+| `MCP_HTTP_BEARER_TOKEN`             | conditional |    -    | Incoming client bearer; required for non-loopback HTTP         |
+| `MCP_HTTP_BEARER_TOKEN_FILE`        | conditional |    -    | File containing the incoming client bearer                    |
+| `MCP_HTTP_ALLOWED_HOSTS`            | conditional | loopback | Comma-separated Host allowlist; required for public bind    |
+| `MCP_HTTP_ALLOWED_ORIGINS`          |      ❌      |    -    | Allowed browser Origins; supplied Origins otherwise fail       |
+| `MCP_HTTP_MAX_BODY_BYTES`           |      ❌      | `1048576` | Maximum JSON-RPC request body                                |
+| `MCP_HTTP_SHUTDOWN_GRACE_MS`        |      ❌      | `10000` | Grace period before active HTTP connections are closed         |
 
 ## Security
 
 - Authentication is performed using a dedicated Planka user account and preferably its API key.
-- Credentials are supplied through environment variables only.
+- Credentials can be supplied directly or through mounted secret files; never configure both
+  forms for the same secret.
+- HTTP clients authenticate with a separate bearer before JSON parsing. Public binds fail closed
+  without both the bearer and an explicit Host allowlist.
 - The MCP server does not persist board data outside the running process.
 - Link attachments are never fetched, file origins are allowlisted, and redirects are rejected.
 - SSL certificate verification is enabled by default.
@@ -400,6 +492,9 @@ with `PLANKA_BASE_URL` and either `PLANKA_API_KEY` or the email/password pair se
 <br>
 
 - Confirm `PLANKA_BASE_URL` has no trailing slash and is reachable from the machine running the MCP server (not just your browser).
+- If API calls work but local attachment reads are rejected, confirm that `PLANKA_BASE_URL`
+  exactly matches Planka's canonical `BASE_URL` origin; `localhost` and `127.0.0.1` are not
+  interchangeable for this check.
 - Check that the agent user can log in with those exact credentials through Planka's normal web UI and has accepted the terms of service.
 
 </details>
