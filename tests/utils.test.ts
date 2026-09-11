@@ -9,6 +9,7 @@ describe("common utils", () => {
     delete process.env.PLANKA_BASE_URL;
     delete process.env.PLANKA_AGENT_EMAIL;
     delete process.env.PLANKA_AGENT_PASSWORD;
+    delete process.env.PLANKA_API_KEY;
     jest.spyOn(console, "error").mockImplementation(() => {});
   });
 
@@ -120,6 +121,54 @@ describe("common utils", () => {
         headers: expect.objectContaining({ Authorization: "Bearer token-1" }),
       }),
     );
+  });
+
+  test("plankaRequest prefers a user API key without logging in", async () => {
+    process.env.PLANKA_BASE_URL = "https://planka.example";
+    process.env.PLANKA_API_KEY = "api-key-1";
+    const fetchMock = jest.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ items: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    global.fetch = fetchMock;
+
+    const { plankaRequest } = await import("../common/utils.js");
+    await plankaRequest("/api/projects");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://planka.example/api/projects",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "X-Api-Key": "api-key-1" }),
+      }),
+    );
+  });
+
+  test("download auth uses API keys or the JWT accessToken cookie", async () => {
+    process.env.PLANKA_API_KEY = "api-key-1";
+    let utils = await import("../common/utils.js");
+    await expect(utils.getPlankaAuthHeaders("download")).resolves.toEqual({
+      "X-Api-Key": "api-key-1",
+    });
+
+    jest.resetModules();
+    delete process.env.PLANKA_API_KEY;
+    process.env.PLANKA_BASE_URL = "https://planka.example";
+    process.env.PLANKA_AGENT_EMAIL = "agent@example.test";
+    process.env.PLANKA_AGENT_PASSWORD = "secret";
+    global.fetch = jest.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ item: "token-1" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    utils = await import("../common/utils.js");
+
+    await expect(utils.getPlankaAuthHeaders("download")).resolves.toEqual({
+      Cookie: "accessToken=token-1",
+    });
   });
 
   test("plankaRequest wraps Planka errors without leaking the request URL", async () => {

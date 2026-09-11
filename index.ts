@@ -17,13 +17,14 @@ import * as projects from "./operations/projects.js";
 import * as taskLists from "./operations/taskLists.js";
 import * as tasks from "./operations/tasks.js";
 import * as users from "./operations/users.js";
-
+import { registerAttachmentResources } from "./resources/attachments.js";
 // Import custom tools
 import {
   createCardWithTasks,
   getBoardSummary,
   getCardDetails,
   getProjectSummary,
+  registerAttachmentTool,
 } from "./tools/index.js";
 
 const server = new McpServer(
@@ -44,6 +45,9 @@ const registerTool = server.tool.bind(server) as (
   paramsSchema: Record<string, z.ZodTypeAny>,
   cb: (args: any) => Promise<{ content: Array<{ type: "text"; text: string }> }>,
 ) => unknown;
+
+registerAttachmentResources(server);
+registerAttachmentTool(server);
 
 // ----- CONSOLIDATED KANBAN TOOLS -----
 

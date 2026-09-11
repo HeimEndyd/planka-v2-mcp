@@ -148,12 +148,22 @@ Project setup completed successfully.
 | `comment_manager`         | `get_all` · `create` · `get_one` · `update` · `delete`                                                                                                                                                                | Comments on a card                                       |
 | `membership_manager`      | `get_all` · `create` · `get_one` · `update` · `delete`                                                                                                                                                                | Board-level membership and roles (`editor` / `viewer`)   |
 | `card_membership_manager` | `get_all` · `get_users` · `create` · `delete`                                                                                                                                                                         | Assign/remove card members by **ID, email, or username** |
+| `attachment_manager`      | `read`                                                                                                                                                                                                                | Read supported file attachments without modifying them   |
 
 </details>
 
 `card_manager` with `action: "get_details"` includes an `attachments` array with read-only
 metadata: attachment and card IDs, creator user ID, name, type, MIME type, size, download or link
-URL, and timestamps. It does not download or return attachment contents.
+URL, MCP resource URI, and timestamps. It does not download attachment contents automatically.
+
+Use `attachment_manager` with `action: "read"`, `cardId`, and `attachmentId` to return
+the file as an embedded MCP resource. The same content is available through `resources/read` using
+`planka-attachment://{cardId}/{attachmentId}`. Link attachments are never fetched.
+
+Downloads are limited to UTF-8 plain text, Markdown, and JSON up to 256 KiB; PNG, JPEG, WebP,
+and GIF up to 5 MiB; and PDF up to 10 MiB. Other MIME types, redirects, oversized files, and
+unapproved origins are rejected. S3-backed deployments can explicitly allow additional HTTPS
+origins with `PLANKA_ATTACHMENT_ALLOWED_ORIGINS`.
 
 ## Quick Start
 
@@ -186,6 +196,10 @@ The core config block is always:
   }
 }
 ```
+
+On Planka v2, a user API key is preferred for service integrations. Set
+`PLANKA_API_KEY` instead of `PLANKA_AGENT_EMAIL` and `PLANKA_AGENT_PASSWORD`; the server uses
+`X-Api-Key` for both API requests and attachment downloads.
 
 <details>
 <summary><strong>Alternative: run from a local build</strong></summary>
@@ -354,24 +368,28 @@ The server is a standard stdio MCP server - any client that supports the `comman
 npx -y @goldpulpy/planka-v2-mcp@latest
 ```
 
-with the four `PLANKA_*` environment variables set as shown above.
+with `PLANKA_BASE_URL` and either `PLANKA_API_KEY` or the email/password pair set as shown above.
 
 </details>
 
 ## Environment Variables
 
-| Variable                | Required | Default | Description                                          |
-| ----------------------- | :------: | :-----: | ---------------------------------------------------- |
-| `PLANKA_BASE_URL`       |    ✅    |    -    | Full URL of your Planka instance                     |
-| `PLANKA_AGENT_EMAIL`    |    ✅    |    -    | Login email for the dedicated agent user             |
-| `PLANKA_AGENT_PASSWORD` |    ✅    |    -    | Password for the agent user                          |
-| `PLANKA_IGNORE_SSL`     |    ❌    | `false` | Skip SSL verification - self-signed/local certs only |
+| Variable                            | Required    | Default | Description                                                   |
+| ----------------------------------- | :---------: | :-----: | ------------------------------------------------------------- |
+| `PLANKA_BASE_URL`                   |      ✅      |    -    | Full URL of your Planka instance                              |
+| `PLANKA_API_KEY`                    | conditional |    -    | Preferred Planka v2 user API key                              |
+| `PLANKA_AGENT_EMAIL`                | conditional |    -    | Login email when an API key is not set                        |
+| `PLANKA_AGENT_PASSWORD`             | conditional |    -    | Password when an API key is not set                           |
+| `PLANKA_ATTACHMENT_ALLOWED_ORIGINS` |      ❌      |    -    | Comma-separated HTTPS origins for S3-backed attachments       |
+| `PLANKA_ATTACHMENT_TIMEOUT_MS`      |      ❌      | `30000` | Attachment download timeout in milliseconds                   |
+| `PLANKA_IGNORE_SSL`                 |      ❌      | `false` | Skip SSL verification - self-signed/local certificates only   |
 
 ## Security
 
-- Authentication is performed using a dedicated Planka user account.
+- Authentication is performed using a dedicated Planka user account and preferably its API key.
 - Credentials are supplied through environment variables only.
 - The MCP server does not persist board data outside the running process.
+- Link attachments are never fetched, file origins are allowlisted, and redirects are rejected.
 - SSL certificate verification is enabled by default.
 - `PLANKA_IGNORE_SSL=true` should only be used in trusted local or self-hosted environments.
 

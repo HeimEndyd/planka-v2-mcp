@@ -148,6 +148,7 @@ export const PlankaAttachmentMetadataSchema = z.object({
   mimeType: z.string().nullable(),
   size: z.number().nonnegative().nullable(),
   url: z.string(),
+  resourceUri: z.string().nullable(),
   createdAt: z.string().nullable(),
   updatedAt: z.string().nullable(),
 });

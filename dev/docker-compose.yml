@@ -1,6 +1,6 @@
 services:
   planka:
-    image: ghcr.io/plankanban/planka:latest
+    image: ghcr.io/plankanban/planka:2.2.1
     restart: on-failure
     volumes:
       - data:/app/data

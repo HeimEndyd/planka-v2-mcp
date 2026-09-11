@@ -90,6 +90,28 @@ async function getAuthToken(): Promise<string> {
   return authenticateAgent();
 }
 
+export type PlankaAuthTarget = "api" | "download";
+
+/**
+ * Builds authentication headers without exposing credentials to MCP callers.
+ * API keys work for both API and file routes. JWT download routes use the
+ * accessToken cookie because Planka does not consume Authorization there.
+ */
+export async function getPlankaAuthHeaders(
+  target: PlankaAuthTarget = "api",
+): Promise<Record<string, string>> {
+  const apiKey = process.env.PLANKA_API_KEY?.trim();
+  if (apiKey) {
+    return { "X-Api-Key": apiKey };
+  }
+
+  const token = await getAuthToken();
+  if (target === "download") {
+    return { Cookie: `accessToken=${token}` };
+  }
+  return { Authorization: `Bearer ${token}` };
+}
+
 export async function plankaRequest(path: string, options: RequestOptions = {}): Promise<unknown> {
   const baseUrl = process.env.PLANKA_BASE_URL || "http://localhost:3000";
 
@@ -126,8 +148,7 @@ export async function plankaRequest(path: string, options: RequestOptions = {}):
   // Add authentication token if not skipped
   if (!options.skipAuth) {
     try {
-      const token = await getAuthToken();
-      headers.Authorization = `Bearer ${token}`;
+      Object.assign(headers, await getPlankaAuthHeaders("api"));
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       throw new Error(`Failed to get authentication token: ${errorMessage}`);
