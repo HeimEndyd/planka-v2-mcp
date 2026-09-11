@@ -95,6 +95,36 @@ export class PlankaClient {
       : { Authorization: `Bearer ${token}` };
   }
 
+  async validateApiKey(): Promise<unknown | undefined> {
+    if (this.auth?.type !== "api-key") {
+      throw new Error("Planka API key is not configured");
+    }
+
+    if (this.ignoreSsl) process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+    const url = new URL("/api/users/me", this.baseUrl).toString();
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        headers: {
+          Accept: "application/json",
+          "User-Agent": USER_AGENT,
+          "X-Api-Key": this.auth.apiKey,
+        },
+        credentials: "include",
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to validate Planka API key: ${message}`);
+    }
+
+    const responseBody = await parseResponseBody(response);
+    if (response.status === 401) return undefined;
+    if (!response.ok) {
+      throw new Error(`Failed to validate Planka API key: Planka returned HTTP ${response.status}`);
+    }
+    return responseBody;
+  }
+
   async request(path: string, options: PlankaRequestOptions = {}): Promise<unknown> {
     const normalizedPath = path.startsWith("/api/") ? path : `/api/${path}`;
     const urlObject = new URL(normalizedPath, this.baseUrl);

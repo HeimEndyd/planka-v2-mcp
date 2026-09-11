@@ -2,6 +2,17 @@
 
 ## ADDED Requirements
 
+### Requirement: Default passthrough stores no account secret
+
+The default HTTP mode SHALL receive the Planka API key from the client's bearer header and SHALL
+not require a server-side bearer, API-key file, password file, or identity descriptor.
+
+#### Scenario: Passthrough server starts
+
+- **WHEN** no managed credential variables are configured
+- **THEN** the server starts in passthrough mode
+- **AND** each request is validated by Planka before JSON-RPC parsing
+
 ### Requirement: Identity descriptors reference separate secret files
 
 An identity descriptor SHALL contain only absolute secret-file paths and non-secret metadata.

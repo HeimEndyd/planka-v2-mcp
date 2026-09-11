@@ -1,21 +1,17 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { loadIdentityRegistry } from "../common/identity-registry.js";
+import { PlankaApiKeyAuthenticator } from "../common/http-authentication.js";
 import {
   type HttpTransportConfig,
   type RunningHttpServer,
   startHttpServer,
 } from "../transports/http.js";
 
-const TOKEN_A = "http-identity-a-client-token-with-at-least-32-bytes";
-const TOKEN_B = "http-identity-b-client-token-with-at-least-32-bytes";
-let tempDirectory: string;
+const API_KEY_A = "planka-api-key-a";
+const API_KEY_B = "planka-api-key-b";
 let fakePlanka: Server | undefined;
 let runningMcp: RunningHttpServer | undefined;
 
@@ -33,12 +29,6 @@ function close(server: Server | undefined): Promise<void> {
   );
 }
 
-function writeSecret(name: string, value: string): string {
-  const path = join(tempDirectory, name);
-  writeFileSync(path, value, { mode: 0o600 });
-  return path;
-}
-
 function parseToolText(result: unknown): unknown {
   const content = (result as { content?: unknown })?.content;
   if (!Array.isArray(content)) throw new Error("Expected tool content");
@@ -49,8 +39,21 @@ function parseToolText(result: unknown): unknown {
   return JSON.parse(item.text);
 }
 
+async function startMcpFor(plankaUrl: string): Promise<RunningHttpServer> {
+  const config: HttpTransportConfig = {
+    host: "127.0.0.1",
+    port: 0,
+    authMode: "passthrough",
+    authenticator: new PlankaApiKeyAuthenticator(plankaUrl),
+    allowedHosts: new Set(["127.0.0.1"]),
+    allowedOrigins: new Set(),
+    maxBodyBytes: 65536,
+    shutdownGraceMs: 1000,
+  };
+  return startHttpServer(config);
+}
+
 beforeEach(() => {
-  tempDirectory = mkdtempSync(join(tmpdir(), "planka-http-identities-"));
   jest.spyOn(console, "error").mockImplementation(() => {});
 });
 
@@ -59,25 +62,33 @@ afterEach(async () => {
   await close(fakePlanka);
   runningMcp = undefined;
   fakePlanka = undefined;
-  rmSync(tempDirectory, { recursive: true, force: true });
   jest.restoreAllMocks();
 });
 
 describe("multi-account HTTP transport", () => {
   test("binds two simultaneous MCP clients to different Planka accounts", async () => {
-    const observedKeys: string[] = [];
+    const observedRequests: Array<{ apiKey: string; path: string }> = [];
     fakePlanka = createServer((request, response) => {
-      const userId = request.url?.split("/").pop();
-      const apiKey = request.headers["x-api-key"];
-      observedKeys.push(String(apiKey));
-      const expectedKey = userId === "user-a" ? "planka-key-a" : "planka-key-b";
-      if (apiKey !== expectedKey) {
-        response.writeHead(403, { "Content-Type": "application/json" });
-        response.end(JSON.stringify({ message: "Forbidden" }));
+      const apiKey = String(request.headers["x-api-key"]);
+      observedRequests.push({ apiKey, path: request.url ?? "" });
+      const userId = apiKey === API_KEY_A ? "user-a" : apiKey === API_KEY_B ? "user-b" : null;
+      if (!userId) {
+        response.writeHead(401, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ message: "Unauthorized" }));
         return;
       }
       setImmediate(() => {
         response.writeHead(200, { "Content-Type": "application/json" });
+        if (request.url === "/api/boards/shared") {
+          response.end(
+            JSON.stringify({
+              included: {
+                lists: [{ id: `${userId}-list`, name: `${userId}-private-list` }],
+              },
+            }),
+          );
+          return;
+        }
         response.end(
           JSON.stringify({
             item: {
@@ -93,42 +104,7 @@ describe("multi-account HTTP transport", () => {
     await listen(fakePlanka);
     const plankaAddress = fakePlanka.address() as AddressInfo;
 
-    const descriptorPath = join(tempDirectory, "identities.json");
-    writeFileSync(
-      descriptorPath,
-      JSON.stringify({
-        version: 1,
-        identities: [
-          {
-            id: "account-a",
-            plankaUserId: "user-a",
-            mcpBearerTokenFile: writeSecret("bearer-a", TOKEN_A),
-            plankaApiKeyFile: writeSecret("api-key-a", "planka-key-a"),
-          },
-          {
-            id: "account-b",
-            plankaUserId: "user-b",
-            mcpBearerTokenFile: writeSecret("bearer-b", TOKEN_B),
-            plankaApiKeyFile: writeSecret("api-key-b", "planka-key-b"),
-          },
-        ],
-      }),
-      { mode: 0o600 },
-    );
-
-    const identityRegistry = loadIdentityRegistry(descriptorPath, {
-      PLANKA_BASE_URL: `http://127.0.0.1:${plankaAddress.port}`,
-    });
-    const config: HttpTransportConfig = {
-      host: "127.0.0.1",
-      port: 0,
-      identityRegistry,
-      allowedHosts: new Set(["127.0.0.1"]),
-      allowedOrigins: new Set(),
-      maxBodyBytes: 65536,
-      shutdownGraceMs: 1000,
-    };
-    runningMcp = await startHttpServer(config);
+    runningMcp = await startMcpFor(`http://127.0.0.1:${plankaAddress.port}`);
 
     const clientFor = (token: string) => {
       const client = new Client({ name: "multi-account-test", version: "1.0.0" });
@@ -137,8 +113,8 @@ describe("multi-account HTTP transport", () => {
       });
       return { client, transport };
     };
-    const accountA = clientFor(TOKEN_A);
-    const accountB = clientFor(TOKEN_B);
+    const accountA = clientFor(API_KEY_A);
+    const accountB = clientFor(API_KEY_B);
 
     try {
       await Promise.all([
@@ -149,24 +125,103 @@ describe("multi-account HTTP transport", () => {
         accountA.client.callTool({ name: "mcp_kanban_whoami", arguments: {} }),
         accountB.client.callTool({ name: "mcp_kanban_whoami", arguments: {} }),
       ]);
+      const [listsA, listsB] = await Promise.all([
+        accountA.client.callTool({
+          name: "mcp_kanban_list_manager",
+          arguments: { action: "get_all", boardId: "shared" },
+        }),
+        accountB.client.callTool({
+          name: "mcp_kanban_list_manager",
+          arguments: { action: "get_all", boardId: "shared" },
+        }),
+      ]);
 
       expect(parseToolText(whoamiA)).toEqual({
-        identityId: "account-a",
+        identityId: "planka-user-user-a",
         plankaUserId: "user-a",
         authMode: "api-key",
         account: { id: "user-a", name: "Account A", username: "user-a", isAdmin: true },
       });
       expect(parseToolText(whoamiB)).toEqual({
-        identityId: "account-b",
+        identityId: "planka-user-user-b",
         plankaUserId: "user-b",
         authMode: "api-key",
         account: { id: "user-b", name: "Account B", username: "user-b", isAdmin: false },
       });
-      expect(observedKeys).toEqual(expect.arrayContaining(["planka-key-a", "planka-key-b"]));
-      expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining("planka-key-a"));
-      expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining("planka-key-b"));
+      expect(parseToolText(listsA)).toEqual([{ id: "user-a-list", name: "user-a-private-list" }]);
+      expect(parseToolText(listsB)).toEqual([{ id: "user-b-list", name: "user-b-private-list" }]);
+      expect(observedRequests).toEqual(
+        expect.arrayContaining([
+          { apiKey: API_KEY_A, path: "/api/users/me" },
+          { apiKey: API_KEY_B, path: "/api/users/me" },
+          { apiKey: API_KEY_A, path: "/api/boards/shared" },
+          { apiKey: API_KEY_B, path: "/api/boards/shared" },
+        ]),
+      );
+      expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining(API_KEY_A));
+      expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining(API_KEY_B));
     } finally {
       await Promise.all([accountA.client.close(), accountB.client.close()]);
     }
+  });
+
+  test("rejects invalid and revoked API keys before parsing JSON", async () => {
+    let activeKey = API_KEY_A;
+    const observedKeys: string[] = [];
+    fakePlanka = createServer((request, response) => {
+      const apiKey = String(request.headers["x-api-key"]);
+      observedKeys.push(apiKey);
+      if (apiKey !== activeKey) {
+        response.writeHead(401, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ message: "Unauthorized" }));
+        return;
+      }
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ item: { id: "user-a", username: "account-a" } }));
+    });
+    await listen(fakePlanka);
+    const plankaAddress = fakePlanka.address() as AddressInfo;
+    runningMcp = await startMcpFor(`http://127.0.0.1:${plankaAddress.port}`);
+
+    const requestWith = (apiKey?: string) =>
+      fetch(runningMcp?.endpoint as URL, {
+        method: "POST",
+        headers: {
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+          "Content-Type": "application/json",
+        },
+        body: "not-json",
+      });
+
+    expect((await requestWith()).status).toBe(401);
+    expect(observedKeys).toEqual([]);
+    expect((await requestWith(API_KEY_A)).status).toBe(400);
+    activeKey = API_KEY_B;
+    expect((await requestWith(API_KEY_A)).status).toBe(401);
+    expect((await requestWith(API_KEY_B)).status).toBe(400);
+    expect(observedKeys).toEqual([API_KEY_A, API_KEY_A, API_KEY_B]);
+    expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining(API_KEY_A));
+    expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining(API_KEY_B));
+  });
+
+  test("returns 503 when Planka cannot validate the API key", async () => {
+    fakePlanka = createServer((_request, response) => response.end());
+    await listen(fakePlanka);
+    const plankaAddress = fakePlanka.address() as AddressInfo;
+    await close(fakePlanka);
+    fakePlanka = undefined;
+    runningMcp = await startMcpFor(`http://127.0.0.1:${plankaAddress.port}`);
+
+    const response = await fetch(runningMcp.endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${API_KEY_A}`,
+        "Content-Type": "application/json",
+      },
+      body: "not-json",
+    });
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "authentication_unavailable" });
   });
 });

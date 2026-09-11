@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { z } from "zod";
-import type { McpIdentity } from "./common/identity-registry.js";
+import type { McpIdentity } from "./common/http-authentication.js";
 import { createLegacyPlankaClient, runWithPlankaClient } from "./common/planka-client.js";
 import { getUserIdByEmail, getUserIdByUsername } from "./common/utils.js";
 import { VERSION } from "./common/version.js";
@@ -72,9 +72,12 @@ export function createPlankaMcpServer(identity: McpIdentity = createStdioIdentit
     "Show the MCP identity and its configured Planka account without exposing credentials",
     {},
     async () => {
-      let account: Record<string, unknown> | null = null;
-      if (identity.plankaUserId) {
-        const response = (await users.getUser(identity.plankaUserId)) as Record<string, unknown>;
+      let account: Record<string, unknown> | null = identity.account ?? null;
+      if (!account && (identity.plankaUserId || identity.plankaClient.authMode !== "none")) {
+        const response = (await users.getUser(identity.plankaUserId ?? "me")) as Record<
+          string,
+          unknown
+        >;
         const item = (response.item ?? response) as Record<string, unknown>;
         account = {
           id: item.id,

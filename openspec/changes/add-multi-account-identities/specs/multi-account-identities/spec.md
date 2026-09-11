@@ -2,10 +2,33 @@
 
 ## ADDED Requirements
 
-### Requirement: Bearer selects exactly one server-side identity
+### Requirement: Planka API-key passthrough is the default
 
-The HTTP server SHALL map each accepted MCP bearer to exactly one immutable identity and its own
-Planka client. JSON-RPC arguments SHALL NOT select or override the identity.
+When no managed authentication configuration is present, the HTTP server SHALL interpret the
+client bearer as a Planka user API key, validate it through `/api/users/me` before JSON-RPC parsing,
+and use it as `X-Api-Key` only for that request's API and attachment operations.
+
+#### Scenario: A new Planka account connects
+
+- **WHEN** a client supplies a valid Planka user API key as its MCP bearer
+- **THEN** the server accepts the request without an identity descriptor or restart
+- **AND** `mcp_kanban_whoami` returns the authenticated Planka user
+
+#### Scenario: A key is missing, invalid, or revoked
+
+- **WHEN** Planka rejects the supplied API key
+- **THEN** the MCP server returns HTTP 401 before parsing JSON-RPC
+- **AND** no raw key is logged, persisted, or returned
+
+#### Scenario: Validation is unavailable
+
+- **WHEN** Planka cannot validate a supplied key because the upstream is unavailable
+- **THEN** the MCP server returns HTTP 503 rather than misreporting the key as invalid
+
+### Requirement: Managed bearer selects exactly one server-side identity
+
+In opt-in managed mode, the HTTP server SHALL map each accepted MCP bearer to exactly one immutable
+identity and its own Planka client. JSON-RPC arguments SHALL NOT select or override the identity.
 
 #### Scenario: Two clients use different Planka accounts
 

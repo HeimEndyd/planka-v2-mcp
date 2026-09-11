@@ -3,11 +3,11 @@ import type { AddressInfo } from "node:net";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
-  createLegacyIdentityRegistry,
-  type IdentityRegistry,
-  loadIdentityRegistry,
+  createPlankaApiKeyAuthenticator,
+  type HttpAuthenticator,
   type McpIdentity,
-} from "../common/identity-registry.js";
+} from "../common/http-authentication.js";
+import { createLegacyIdentityRegistry, loadIdentityRegistry } from "../common/identity-registry.js";
 import { readEnvironmentSecret } from "../common/secrets.js";
 import { VERSION } from "../common/version.js";
 import { createPlankaMcpServer } from "../server.js";
@@ -18,7 +18,8 @@ const DEFAULT_SHUTDOWN_GRACE_MS = 10_000;
 export type HttpTransportConfig = {
   host: string;
   port: number;
-  identityRegistry: IdentityRegistry;
+  authMode: "passthrough" | "managed";
+  authenticator: HttpAuthenticator;
   allowedHosts: ReadonlySet<string>;
   allowedOrigins: ReadonlySet<string>;
   maxBodyBytes: number;
@@ -42,6 +43,12 @@ const LEGACY_IDENTITY_VARIABLES = [
   "PLANKA_AGENT_EMAIL_FILE",
   "PLANKA_AGENT_PASSWORD",
   "PLANKA_AGENT_PASSWORD_FILE",
+] as const;
+
+const PASSTHROUGH_CONFLICT_VARIABLES = [
+  "MCP_HTTP_IDENTITIES_FILE",
+  ...LEGACY_IDENTITY_VARIABLES,
+  "PLANKA_USER_ID",
 ] as const;
 
 function isLoopbackHost(host: string): boolean {
@@ -96,7 +103,7 @@ export function loadHttpTransportConfig(
 ): HttpTransportConfig {
   const host = environment.MCP_HTTP_HOST?.trim() || "127.0.0.1";
   const configuredHosts = parseCsv(environment.MCP_HTTP_ALLOWED_HOSTS);
-  const defaultHosts = isLoopbackHost(host) ? [host, "localhost", "127.0.0.1", "::1"] : [];
+  const defaultHosts = isLoopbackHost(host) ? ["localhost", "127.0.0.1", "[::1]"] : [];
   const allowedHosts = new Set(
     (configuredHosts.length ? configuredHosts : defaultHosts).map(normalizeConfiguredHost),
   );
@@ -104,23 +111,49 @@ export function loadHttpTransportConfig(
     parseCsv(environment.MCP_HTTP_ALLOWED_ORIGINS).map(normalizeOrigin),
   );
   const identitiesFile = environment.MCP_HTTP_IDENTITIES_FILE?.trim();
+  const configuredAuthMode = environment.MCP_HTTP_AUTH_MODE?.trim() || undefined;
+  if (
+    configuredAuthMode !== undefined &&
+    configuredAuthMode !== "passthrough" &&
+    configuredAuthMode !== "managed"
+  ) {
+    throw new Error('MCP_HTTP_AUTH_MODE must be "passthrough" or "managed"');
+  }
+  const hasManagedConfiguration = Boolean(
+    identitiesFile || LEGACY_IDENTITY_VARIABLES.some((name) => environment[name]?.trim()),
+  );
+  const authMode = configuredAuthMode ?? (hasManagedConfiguration ? "managed" : "passthrough");
   let bearerToken: string | undefined;
-  let identityRegistry: IdentityRegistry;
+  let authenticator: HttpAuthenticator;
 
-  if (identitiesFile) {
-    const conflictingVariable = LEGACY_IDENTITY_VARIABLES.find((name) => environment[name]?.trim());
+  if (authMode === "passthrough") {
+    const conflictingVariable = PASSTHROUGH_CONFLICT_VARIABLES.find((name) =>
+      environment[name]?.trim(),
+    );
     if (conflictingVariable) {
       throw new Error(
-        `MCP_HTTP_IDENTITIES_FILE cannot be combined with legacy ${conflictingVariable}`,
+        `MCP_HTTP_AUTH_MODE=passthrough cannot be combined with ${conflictingVariable}`,
       );
     }
-    identityRegistry = loadIdentityRegistry(identitiesFile, environment);
+    authenticator = createPlankaApiKeyAuthenticator(environment);
   } else {
-    bearerToken = readEnvironmentSecret("MCP_HTTP_BEARER_TOKEN", environment);
-    identityRegistry = createLegacyIdentityRegistry(bearerToken, environment);
+    if (identitiesFile) {
+      const conflictingVariable = LEGACY_IDENTITY_VARIABLES.find((name) =>
+        environment[name]?.trim(),
+      );
+      if (conflictingVariable) {
+        throw new Error(
+          `MCP_HTTP_IDENTITIES_FILE cannot be combined with legacy ${conflictingVariable}`,
+        );
+      }
+      authenticator = loadIdentityRegistry(identitiesFile, environment);
+    } else {
+      bearerToken = readEnvironmentSecret("MCP_HTTP_BEARER_TOKEN", environment);
+      authenticator = createLegacyIdentityRegistry(bearerToken, environment);
+    }
   }
 
-  if (!isLoopbackHost(host) && !identityRegistry.requiresBearer) {
+  if (!isLoopbackHost(host) && !authenticator.requiresBearer) {
     throw new Error("MCP bearer authentication is required for non-loopback HTTP bind");
   }
   if (bearerToken && Buffer.byteLength(bearerToken, "utf8") < 32) {
@@ -133,7 +166,8 @@ export function loadHttpTransportConfig(
   return {
     host,
     port: parsePort(environment.MCP_HTTP_PORT),
-    identityRegistry,
+    authMode,
+    authenticator,
     allowedHosts,
     allowedOrigins,
     maxBodyBytes: parsePositiveInteger(
@@ -266,7 +300,13 @@ export function createHttpRequestHandler(
       return;
     }
 
-    const identity = config.identityRegistry.authenticate(request.headers.authorization);
+    let identity: McpIdentity | undefined;
+    try {
+      identity = await config.authenticator.authenticate(request.headers.authorization);
+    } catch {
+      writeJson(response, 503, { error: "authentication_unavailable" });
+      return;
+    }
     if (!identity) {
       response.setHeader("WWW-Authenticate", 'Bearer realm="planka-mcp"');
       writeJson(response, 401, { error: "unauthorized" });
@@ -390,6 +430,8 @@ export async function startHttpServer(
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
 
-  console.error(`Planka MCP Streamable HTTP listening at ${endpoint.toString()}`);
+  console.error(
+    `Planka MCP Streamable HTTP listening at ${endpoint.toString()} (auth: ${config.authMode})`,
+  );
   return { server: httpServer, endpoint, close };
 }

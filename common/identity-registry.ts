@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
+import { type HttpAuthenticator, type McpIdentity, parseBearer } from "./http-authentication.js";
 import { createLegacyPlankaClient, type PlankaAuth, PlankaClient } from "./planka-client.js";
 import { readSecretFile } from "./secrets.js";
 
@@ -38,12 +39,6 @@ const descriptorSchema = z
 
 type DescriptorIdentity = z.infer<typeof descriptorSchema>["identities"][number];
 
-export type McpIdentity = {
-  id: string;
-  plankaUserId: string | undefined;
-  plankaClient: PlankaClient;
-};
-
 type AuthenticatedIdentity = {
   identity: McpIdentity;
   bearerDigest: Buffer;
@@ -53,12 +48,7 @@ function digestBearer(token: string): Buffer {
   return createHash("sha256").update(token).digest();
 }
 
-function parseBearer(header: string | undefined): string | undefined {
-  if (!header) return undefined;
-  return /^Bearer\s+([^\s]+)$/i.exec(header)?.[1];
-}
-
-export class IdentityRegistry {
+export class IdentityRegistry implements HttpAuthenticator {
   readonly requiresBearer: boolean;
   readonly size: number;
   private readonly identities: readonly AuthenticatedIdentity[];

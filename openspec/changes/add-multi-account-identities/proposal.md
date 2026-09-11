@@ -3,18 +3,21 @@
 ## Why
 
 The centralized HTTP server currently accepts one client bearer and uses one global Planka
-credential. Multiple trusted clients need independent Planka permissions and independently
-revocable MCP credentials without running one container per account.
+credential. Multiple trusted clients need independent Planka permissions without running one
+container per account or registering every account in the server configuration.
 
 ## What Changes
 
-- Add a file-backed identity descriptor that maps independent MCP bearer secret files to
-  independent Planka credential secret files.
+- Treat the client's Planka user API key as the HTTP bearer by default, validate it against
+  Planka, and pass it upstream as `X-Api-Key` without persisting it on the MCP server.
+- Keep the file-backed identity descriptor as an opt-in managed mode when clients must not receive
+  the upstream Planka credential or require independent MCP credential revocation.
 - Resolve an immutable identity before parsing JSON-RPC and bind every MCP request to its own
   Planka client context.
 - Remove module-global Planka access-token state.
 - Add a safe `mcp_kanban_whoami` tool and metadata-only request audit records.
-- Preserve the existing single-account environment configuration and STDIO behavior.
+- Preserve the existing single-account environment configuration, managed identities, and STDIO
+  behavior.
 
 ## Impact
 

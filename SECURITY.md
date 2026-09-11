@@ -24,3 +24,10 @@ You can expect an initial response as soon as practical. Confirmed vulnerabiliti
 ## Credential Handling
 
 This package uses `PLANKA_*` environment variables to connect to Planka. Never commit real Planka credentials, tokens, or production URLs. Set `PLANKA_IGNORE_SSL=true` only for trusted local or self-signed environments.
+
+Streamable HTTP defaults to Planka API-key passthrough: the client bearer is validated against
+Planka and forwarded only as `X-Api-Key` to the configured Planka origin. The server does not
+persist it or log authorization headers. A passthrough client can still use that credential
+directly against Planka, so issue keys only to dedicated least-privilege accounts. Use managed
+identity mode when the upstream credential must remain server-side or MCP access needs independent
+revocation.
