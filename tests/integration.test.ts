@@ -35,6 +35,7 @@ const cardName = `${testPrefix}-card`;
 const labelName = `${testPrefix}-label`;
 const taskName = `${testPrefix}-task`;
 const commentText = `${testPrefix}-comment`;
+const attachmentName = `${testPrefix}-attachment.pdf`;
 
 // Store created IDs for cleanup
 let projectId: string;
@@ -44,6 +45,7 @@ let cardId: string;
 let labelId: string;
 let taskId: string;
 let commentId: string;
+let attachmentId: string;
 
 // Test timeout (5 minutes)
 jest.setTimeout(300000);
@@ -73,6 +75,9 @@ describe("MCP Planka Integration Tests", () => {
   afterAll(async () => {
     // Delete all created resources in reverse order
     try {
+      if (attachmentId) {
+        await plankaRequest(`/api/attachments/${attachmentId}`, { method: "DELETE" });
+      }
       if (commentId) await comments.deleteComment(commentId);
       if (taskId) await tasks.deleteTask(taskId);
       if (labelId) await labels.deleteLabel(labelId);
@@ -453,7 +458,21 @@ describe("MCP Planka Integration Tests", () => {
       expect(result.stats).toBeDefined();
     });
 
-    test("should get card details", async () => {
+    test("should get card details with read-only attachment metadata", async () => {
+      const formData = new FormData();
+      const file = new Blob(["%PDF-1.4\n% planka-v2-mcp integration fixture\n"], {
+        type: "application/pdf",
+      });
+      formData.append("type", "file");
+      formData.append("name", attachmentName);
+      formData.append("file", file, attachmentName);
+
+      const attachmentResponse: any = await plankaRequest(`/api/cards/${cardId}/attachments`, {
+        method: "POST",
+        body: formData,
+      });
+      attachmentId = attachmentResponse.item.id;
+
       const result = await getCardDetails({
         cardId,
       });
@@ -462,6 +481,20 @@ describe("MCP Planka Integration Tests", () => {
       expect(result.card.id).toBe(cardId);
       expect(result.taskItems).toBeDefined();
       expect(result.comments).toBeDefined();
+      expect(result.attachments).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: attachmentId,
+            cardId,
+            name: attachmentName,
+            type: "file",
+            mimeType: "application/pdf",
+            size: file.size,
+            creatorUserId: expect.any(String),
+            url: expect.stringContaining(`/attachments/${attachmentId}/download/`),
+          }),
+        ]),
+      );
     });
 
     test("should create card with tasks", async () => {

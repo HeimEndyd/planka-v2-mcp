@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { type PlankaAttachmentMetadata, PlankaAttachmentSchema } from "../common/types.js";
 import { plankaRequest } from "../common/utils.js";
 import { getBoards } from "../operations/boards.js";
 import { getCardWithIncluded } from "../operations/cards.js";
@@ -21,15 +22,17 @@ export const getCardDetailsSchema = z.object({
 export type GetCardDetailsParams = z.infer<typeof getCardDetailsSchema>;
 
 /**
- * Retrieves comprehensive details about a card including tasks, comments, labels, and analysis
+ * Retrieves comprehensive details about a card including tasks, comments, labels, attachment
+ * metadata, and analysis
  *
  * This function aggregates data from multiple sources to provide a complete view of a card,
- * including its tasks, comments, and labels. It also calculates task completion percentage
- * and performs analysis on the card's status.
+ * including its tasks, comments, labels, and read-only attachment metadata. It also calculates
+ * task completion percentage and performs analysis on the card's status.
  *
  * @param {GetCardDetailsParams} params - Parameters for retrieving card details
  * @param {string} params.cardId - The ID of the card to get details for
- * @returns {Promise<object>} Comprehensive card details including tasks, comments, labels, and analysis
+ * @returns {Promise<object>} Comprehensive card details including tasks, comments, labels,
+ * attachment metadata, and analysis
  * @throws {Error} If the card is not found or if the board ID cannot be determined
  */
 export async function getCardDetails(params: GetCardDetailsParams) {
@@ -43,6 +46,28 @@ export async function getCardDetails(params: GetCardDetailsParams) {
     if (!card) {
       throw new Error(`Card with ID ${cardId} not found`);
     }
+
+    const includedAttachments = Array.isArray(cardResponse.included?.attachments)
+      ? cardResponse.included.attachments
+      : [];
+    const attachments: PlankaAttachmentMetadata[] = includedAttachments
+      .map((attachment) => PlankaAttachmentSchema.parse(attachment))
+      .filter((attachment) => attachment.cardId === card.id)
+      .map((attachment) => ({
+        id: attachment.id,
+        cardId: attachment.cardId,
+        creatorUserId: attachment.creatorUserId,
+        name: attachment.name,
+        type: attachment.type,
+        mimeType: attachment.type === "file" ? attachment.data.mimeType : null,
+        size:
+          attachment.type === "file"
+            ? (attachment.data.size ?? attachment.data.sizeInBytes ?? null)
+            : null,
+        url: attachment.data.url,
+        createdAt: attachment.createdAt,
+        updatedAt: attachment.updatedAt,
+      }));
 
     // Get tasks for the card
     const tasks = await getTasks(card.id);
@@ -123,6 +148,7 @@ export async function getCardDetails(params: GetCardDetailsParams) {
       },
       comments: sortedComments,
       labels,
+      attachments,
       analysis: {
         hasRecentHumanFeedback,
         isComplete: completionPercentage === 100,

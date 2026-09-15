@@ -63,6 +63,7 @@ This MCP server exposes the Planka v2 API through the Model Context Protocol (MC
 | -------------- | ------------------- |
 | 2.0.0-rc.2     | ✅ Tested           |
 | 2.1.1          | ✅ Tested           |
+| 2.2.1          | ✅ Tested           |
 | Newer 2.x      | ⚠️ Expected to work |
 
 ## Features
@@ -149,6 +150,10 @@ Project setup completed successfully.
 | `card_membership_manager` | `get_all` · `get_users` · `create` · `delete`                                                                                                                                                                         | Assign/remove card members by **ID, email, or username** |
 
 </details>
+
+`card_manager` with `action: "get_details"` includes an `attachments` array with read-only
+metadata: attachment and card IDs, creator user ID, name, type, MIME type, size, download or link
+URL, and timestamps. It does not download or return attachment contents.
 
 ## Quick Start
 

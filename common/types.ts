@@ -108,13 +108,46 @@ export const PlankaCommentSchema = z.object({
   updatedAt: z.string().nullable(),
 });
 
-export const PlankaAttachmentSchema = z.object({
+const PlankaAttachmentBaseSchema = z.object({
   id: z.string(),
   cardId: z.string(),
   creatorUserId: z.string().nullable(),
   name: z.string(),
-  type: z.enum(["file", "link"]).optional(),
-  url: z.string().optional(),
+  createdAt: z.string().nullable(),
+  updatedAt: z.string().nullable(),
+});
+
+export const PlankaAttachmentSchema = z.discriminatedUnion("type", [
+  PlankaAttachmentBaseSchema.extend({
+    type: z.literal("file"),
+    data: z
+      .object({
+        mimeType: z.string().nullable(),
+        size: z.number().nonnegative().optional(),
+        sizeInBytes: z.number().nonnegative().optional(),
+        url: z.string(),
+      })
+      .passthrough(),
+  }),
+  PlankaAttachmentBaseSchema.extend({
+    type: z.literal("link"),
+    data: z
+      .object({
+        url: z.string(),
+      })
+      .passthrough(),
+  }),
+]);
+
+export const PlankaAttachmentMetadataSchema = z.object({
+  id: z.string(),
+  cardId: z.string(),
+  creatorUserId: z.string().nullable(),
+  name: z.string(),
+  type: z.enum(["file", "link"]),
+  mimeType: z.string().nullable(),
+  size: z.number().nonnegative().nullable(),
+  url: z.string(),
   createdAt: z.string().nullable(),
   updatedAt: z.string().nullable(),
 });
@@ -165,6 +198,7 @@ export type PlankaTaskList = z.infer<typeof PlankaTaskListSchema>;
 export type PlankaTask = z.infer<typeof PlankaTaskSchema>;
 export type PlankaComment = z.infer<typeof PlankaCommentSchema>;
 export type PlankaAttachment = z.infer<typeof PlankaAttachmentSchema>;
+export type PlankaAttachmentMetadata = z.infer<typeof PlankaAttachmentMetadataSchema>;
 export type PlankaCardMembership = z.infer<typeof PlankaCardMembershipSchema>;
 export type PlankaBoardMembership = z.infer<typeof PlankaBoardMembershipSchema>;
 export type PlankaProjectMembership = z.infer<typeof PlankaProjectMembershipSchema>;
